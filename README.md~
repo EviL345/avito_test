@@ -1,0 +1,15 @@
+# Тестовое задание для стажёра Backend-направления (весенняя волна 2025)
+
+## Сервис для работы с ПВЗ
+
+*для запуска приложения: make run
+
+*для запуска тестов: make test
+
+### в проекте использовал:
+
+* фреймворк [gin](github.com/gin-gonic/gin)
+* [go-sqlmock](github.com/DATA-DOG/go-sqlmock)
+* [testify](github.com/stretchr/testify)
+* [mock](https://github.com/uber-go/mock)
+* [oapi-codegen](https://github.com/oapi-codegen/oapi-codegen)

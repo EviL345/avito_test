@@ -1,0 +1,17 @@
+package service
+
+import "github.com/EviL345/avito_test/internal/model/entity"
+
+type Repository interface {
+	Create(user *entity.User) error
+}
+
+type Service struct {
+	repo Repository
+}
+
+func New(repo Repository) *Service {
+	return &Service{
+		repo: repo,
+	}
+}

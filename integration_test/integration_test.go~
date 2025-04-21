@@ -1,0 +1,266 @@
+package integration_test
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"testing"
+	"time"
+
+	"github.com/go-resty/resty/v2"
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"github.com/stretchr/testify/suite"
+)
+
+const (
+	baseURL           = "http://localhost:8080"
+	defaultTimeout    = 30 * time.Second
+	serviceHealthPath = "/health" // Предполагаемый путь для проверки здоровья API
+
+	// Роли пользователей
+	roleModerator = "moderator"
+	roleEmployee  = "employee"
+
+	// API пути
+	pathDummyLogin = "/dummyLogin"
+	pathPVZ        = "/pvz"
+	pathReceptions = "/receptions"
+	pathProducts   = "/products"
+)
+
+type TokenResponse struct {
+	Token string `json:"token"`
+}
+
+type PVZResponse struct {
+	ID string `json:"id"`
+}
+
+type ReceptionResponse struct {
+	ID string `json:"id"`
+}
+
+type ProductResponse struct {
+	ID string `json:"id"`
+}
+
+type IntegrationSuite struct {
+	suite.Suite
+	ctx            context.Context
+	cancel         context.CancelFunc
+	client         *resty.Client
+	moderatorToken string
+	employeeToken  string
+}
+
+func (s *IntegrationSuite) SetupTest() {
+	s.ctx, s.cancel = context.WithTimeout(context.Background(), defaultTimeout)
+
+	s.client = resty.New().
+		SetBaseURL(baseURL).
+		SetTimeout(defaultTimeout).
+		SetRetryCount(3).
+		SetRetryWaitTime(500 * time.Millisecond).
+		SetRetryMaxWaitTime(2 * time.Second)
+
+	// Проверка доступности сервиса перед тестами
+	s.checkServiceHealth()
+}
+
+func (s *IntegrationSuite) checkServiceHealth() {
+	ctx, cancel := context.WithTimeout(s.ctx, 5*time.Second)
+	defer cancel()
+
+	resp, err := s.client.R().
+		SetContext(ctx).
+		Get(serviceHealthPath)
+
+	require.NoErrorf(s.T(), err, "Сервис недоступен: %v", err)
+	require.Equal(s.T(), http.StatusOK, resp.StatusCode(), "Сервис вернул неожиданный статус код: %d", resp.StatusCode())
+}
+
+func (s *IntegrationSuite) TearDownTest() {
+	if s.cancel != nil {
+		s.cancel()
+	}
+}
+
+func (s *IntegrationSuite) loginAs(role string) string {
+	t := s.T()
+	body := map[string]interface{}{
+		"role": role,
+	}
+
+	var tokenResp TokenResponse
+	resp, err := s.client.R().
+		SetContext(s.ctx).
+		SetBody(body).
+		Post(pathDummyLogin)
+
+	t.Logf("DummyLogin (%s) response: %s", role, resp.Body())
+	require.NoError(t, err, "Ошибка при аутентификации с ролью %s", role)
+	require.Equal(t, http.StatusOK, resp.StatusCode(), "Неверный статус код при аутентификации")
+
+	err = json.Unmarshal(resp.Body(), &tokenResp)
+	require.NoError(t, err, "Ошибка при разборе ответа аутентификации")
+	require.NotEmpty(t, tokenResp.Token, "Токен не должен быть пустым")
+
+	return tokenResp.Token
+}
+
+func (s *IntegrationSuite) TestPVZPipeline() {
+	t := s.T()
+
+	t.Run("Аутентификация модератора", func(t *testing.T) {
+		s.moderatorToken = s.loginAs(roleModerator)
+		assert.NotEmpty(t, s.moderatorToken, "Токен модератора должен быть получен")
+	})
+
+	var pvzID string
+
+	t.Run("Создание ПВЗ", func(t *testing.T) {
+		uniqueID := uuid.New()
+		registrationDate := time.Now().Format(time.RFC3339)
+		pvzBody := map[string]interface{}{
+			"id":               uniqueID,
+			"registrationDate": registrationDate,
+			"city":             "Казань",
+		}
+
+		var pvzResp PVZResponse
+		resp, err := s.client.R().
+			SetContext(s.ctx).
+			SetHeader("Authorization", s.moderatorToken).
+			SetBody(pvzBody).
+			Post(pathPVZ)
+
+		t.Logf("Create PVZ response: %v", string(resp.Body()))
+		require.NoError(t, err, "Ошибка при создании ПВЗ")
+		require.Equal(t, http.StatusCreated, resp.StatusCode(), "Неверный статус код при создании ПВЗ")
+
+		err = json.Unmarshal(resp.Body(), &pvzResp)
+		require.NoError(t, err, "Ошибка при разборе ответа создания ПВЗ")
+		require.NotEmpty(t, pvzResp.ID, "ID созданного ПВЗ не должен быть пустым")
+
+		pvzID = pvzResp.ID
+	})
+
+	var receptionID string
+
+	t.Run("Аутентификация сотрудника", func(t *testing.T) {
+		s.employeeToken = s.loginAs(roleEmployee)
+		assert.NotEmpty(t, s.employeeToken, "Токен сотрудника должен быть получен")
+	})
+
+	t.Run("Создание приемки", func(t *testing.T) {
+		receptionBody := map[string]interface{}{
+			"pvzId": pvzID,
+		}
+
+		var receptionResp ReceptionResponse
+		resp, err := s.client.R().
+			SetContext(s.ctx).
+			SetHeader("Authorization", s.employeeToken).
+			SetBody(receptionBody).
+			Post(pathReceptions)
+
+		t.Logf("Create Reception response: %v", string(resp.Body()))
+		require.NoError(t, err, "Ошибка при создании приемки")
+		require.Equal(t, http.StatusCreated, resp.StatusCode(), "Неверный статус код при создании приемки")
+
+		err = json.Unmarshal(resp.Body(), &receptionResp)
+		require.NoError(t, err, "Ошибка при разборе ответа создания приемки")
+		require.NotEmpty(t, receptionResp.ID, "ID созданной приемки не должен быть пустым")
+
+		receptionID = receptionResp.ID
+	})
+
+	t.Run("Добавление товаров", func(t *testing.T) {
+		const productCount = 50
+
+		for i := 1; i <= productCount; i++ {
+			productBody := map[string]interface{}{
+				"type":  "одежда",
+				"pvzId": pvzID,
+			}
+
+			resp, err := s.client.R().
+				SetContext(s.ctx).
+				SetHeader("Authorization", s.employeeToken).
+				SetBody(productBody).
+				Post(pathProducts)
+
+			// Логируем только каждый 10-й товар, чтобы не перегружать вывод
+			if i%10 == 0 || i == 1 {
+				t.Logf("Add Product %d response: %s", i, resp.Body())
+			}
+
+			assert.NoError(t, err, "Ошибка при добавлении товара #%d", i)
+			assert.Equal(t, http.StatusCreated, resp.StatusCode(), "Неверный статус код при добавлении товара #%d", i)
+
+			// Проверяем, что ответ содержит валидный JSON
+			var productResp map[string]interface{}
+			err = json.Unmarshal(resp.Body(), &productResp)
+			assert.NoError(t, err, "Невалидный JSON в ответе при добавлении товара #%d", i)
+		}
+	})
+
+	t.Run("Закрытие приемки", func(t *testing.T) {
+		closeReceptionURL := fmt.Sprintf("/pvz/%s/close_last_reception", pvzID)
+		resp, err := s.client.R().
+			SetContext(s.ctx).
+			SetHeader("Authorization", s.employeeToken).
+			Post(closeReceptionURL)
+
+		t.Logf("Close Reception response: %v", string(resp.Body()))
+		require.NoError(t, err, "Ошибка при закрытии приемки")
+		require.Equal(t, http.StatusOK, resp.StatusCode(), "Неверный статус код при закрытии приемки")
+
+		// Дополнительная проверка успешного закрытия приемки
+		s.waitForReceptionClosed(pvzID, receptionID)
+	})
+}
+
+// waitForReceptionClosed ожидает, пока приемка не будет закрыта
+func (s *IntegrationSuite) waitForReceptionClosed(pvzID, receptionID string) {
+	t := s.T()
+
+	checkURL := fmt.Sprintf("/receptions/%s", receptionID)
+	maxAttempts := 5
+
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		resp, err := s.client.R().
+			SetContext(s.ctx).
+			SetHeader("Authorization", s.employeeToken).
+			Get(checkURL)
+
+		if err != nil || resp.StatusCode() != http.StatusOK {
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		var receptionData map[string]interface{}
+		if err := json.Unmarshal(resp.Body(), &receptionData); err != nil {
+			t.Logf("Ошибка при разборе ответа о статусе приемки: %v", err)
+			time.Sleep(500 * time.Millisecond)
+			continue
+		}
+
+		// Проверяем статус приемки (предполагаемое поле status)
+		if status, ok := receptionData["status"].(string); ok && status == "closed" {
+			t.Logf("Приемка успешно закрыта")
+			return
+		}
+
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	t.Errorf("Приемка не была закрыта после %d попыток", maxAttempts)
+}
+
+func TestIntegrationSuite(t *testing.T) {
+	suite.Run(t, new(IntegrationSuite))
+}
