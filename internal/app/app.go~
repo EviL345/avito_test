@@ -41,10 +41,10 @@ func Run() {
 
 	serverAddr := fmt.Sprintf("%s:%s", cfg.HttpServer.Host, cfg.HttpServer.Port)
 	go func() {
-		pvzv1.Start(cfg.GrpcServer.Port)
+		pvzv1.Start(cfg.GrpcServer.Port, hndlr)
 	}()
 
-	go func(){
+	go func() {
 		metrics.StartMetricsServer(cfg.PrometheusServer.Port)
 	}()
 

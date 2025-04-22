@@ -77,10 +77,7 @@ func (r *PVZRepository) GetPvz(startDate, endDate *time.Time, page, limit *int) 
 
 	rows, err := r.db.Query(query, startDate, endDate, limit, offset)
 	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrPvzNotFound
-		}
-		log.Printf("error: %v", err)
+		log.Printf("error querying database: %v", err)
 		return nil, err
 	}
 	defer rows.Close()
@@ -92,11 +89,14 @@ func (r *PVZRepository) GetPvz(startDate, endDate *time.Time, page, limit *int) 
 
 	pvzMap := make(map[uuid.UUID]*tempPvzInfo)
 	result := make([]*response.PvzInfo, 0)
+	hasRows := false
 
 	for rows.Next() {
+		hasRows = true
 		var pvzID, receptionID, receptionPVZID, productID, productReceptionID uuid.UUID
-		var pvzCity, receptionStatus, productType string
-		var pvzRegistrationDate, receptionDateTime, productDateTime time.Time
+		var pvzCity, receptionStatus, productType sql.NullString
+		var pvzRegistrationDate, receptionDateTime sql.NullTime
+		var productDateTime sql.NullTime
 
 		err = rows.Scan(
 			&pvzID, &pvzCity, &pvzRegistrationDate,
@@ -104,7 +104,7 @@ func (r *PVZRepository) GetPvz(startDate, endDate *time.Time, page, limit *int) 
 			&productID, &productDateTime, &productType, &productReceptionID,
 		)
 		if err != nil {
-			log.Printf("error: %v", err)
+			log.Printf("error scanning row: %v", err)
 			return nil, err
 		}
 
@@ -112,8 +112,8 @@ func (r *PVZRepository) GetPvz(startDate, endDate *time.Time, page, limit *int) 
 		if _, exists := pvzMap[pvzID]; !exists {
 			pvz := response.Pvz{
 				Id:               pvzID,
-				RegistrationDate: pvzRegistrationDate,
-				City:             pvzCity,
+				RegistrationDate: pvzRegistrationDate.Time,
+				City:             pvzCity.String,
 			}
 			pvzInfo := &response.PvzInfo{
 				Pvz:        pvz,
@@ -133,9 +133,9 @@ func (r *PVZRepository) GetPvz(startDate, endDate *time.Time, page, limit *int) 
 			if _, exists := tempPVZ.receptionsMap[receptionID]; !exists {
 				reception := response.Reception{
 					Id:       receptionID,
-					DateTime: receptionDateTime,
+					DateTime: receptionDateTime.Time,
 					PvzId:    receptionPVZID,
-					Status:   receptionStatus,
+					Status:   receptionStatus.String,
 				}
 				receptionWithProducts := response.ReceptionsWithProducts{
 					Reception: reception,
@@ -150,8 +150,8 @@ func (r *PVZRepository) GetPvz(startDate, endDate *time.Time, page, limit *int) 
 			if productID != uuid.Nil {
 				product := response.Product{
 					Id:          productID,
-					DateTime:    productDateTime,
-					Type:        productType,
+					DateTime:    productDateTime.Time,
+					Type:        productType.String,
 					ReceptionId: productReceptionID,
 				}
 				tempPVZ.receptionsMap[receptionID].Products = append(
@@ -163,8 +163,13 @@ func (r *PVZRepository) GetPvz(startDate, endDate *time.Time, page, limit *int) 
 	}
 
 	if err = rows.Err(); err != nil {
-		log.Printf("error: %v", err)
+		log.Printf("error processing rows: %v", err)
 		return nil, err
+	}
+
+	// Если нет данных, возвращаем пустой массив вместо ошибки
+	if !hasRows {
+		return []response.PvzInfo{}, nil
 	}
 
 	// Преобразуем []*response.PvzInfo в []response.PvzInfo

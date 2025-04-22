@@ -6,21 +6,24 @@ import (
 )
 
 func (s *PVZServer) GetPVZList(ctx context.Context, req *GetPVZListRequest) (*GetPVZListResponse, error) {
-	pvzsInfo, err := s.pvzService.GetPvz(nil, nil, nil, nil)
+	page, limit := new(int), new(int)
+	*page = 0
+	*limit = 100
+	PVZsInfo, err := s.pvzService.GetPvz(nil, nil, page, limit)
 	if err != nil {
 		return nil, err
 	}
 
 	var res []*PVZ
-	for _, pvzInfo := range pvzsInfo {
+	for _, pvzInfo := range PVZsInfo {
 		res = append(res, &PVZ{
-			Id:               p,
-			City:             string(pvzInfo.Pvz.City),
-			RegistrationDate: timestamppb.New(pvz.RegistrationDate),
+			Id:               pvzInfo.Pvz.Id.String(),
+			City:             pvzInfo.Pvz.City,
+			RegistrationDate: timestamppb.New(pvzInfo.Pvz.RegistrationDate),
 		})
 	}
 
 	return &GetPVZListResponse{
-		Pvzs: pvzs,
+		Pvzs: res,
 	}, nil
 }
